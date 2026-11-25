@@ -2,7 +2,42 @@ use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE},
     Engine as _,
 };
+use std::time::Duration;
 
+pub const FETCH_RETRIES: u32 = 3;
+
+/// Kaynak indir (3 denemeli: raw.githubusercontent ara sira gecici 404/rate-limit
+/// donduruyor, tek denemede kaynagin tamami cop olurdu).
+pub async fn fetch_text(client: &reqwest::Client, url: &str) -> String {
+    let mut last_err = String::from("bilinmiyor");
+    for attempt in 1..=FETCH_RETRIES {
+        match client.get(url).send().await {
+            Ok(r) => match r.error_for_status() {
+                Ok(r) => {
+                    let t = r.text().await.unwrap_or_default();
+                    // gercek subscription KB'larca olur; bayt-mertebesi = hata sayfasi
+                    if t.trim().len() > 100 {
+                        if attempt > 1 {
+                            eprintln!("[BILGI] {url} {attempt}. denemede indi");
+                        }
+                        return t;
+                    }
+                    last_err = format!("bos/supheli govde ({} byte)", t.trim().len());
+                }
+                Err(e) => last_err = e.to_string(),
+            },
+            Err(e) => last_err = e.to_string(),
+        }
+        if attempt < FETCH_RETRIES {
+            eprintln!(
+                "[UYARI] {url} indirilemedi (deneme {attempt}/{FETCH_RETRIES}): {last_err} -> tekrar deneniyor"
+            );
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
+    }
+    eprintln!("[HATA] {url} -> {FETCH_RETRIES} deneme de basarisiz: {last_err}");
+    String::new()
+}
 /// Desteklenen URI semalari (case-insensitive).
 pub const SCHEMES: &[&str] = &[
     "vmess://",
@@ -20,22 +55,6 @@ pub const SCHEMES: &[&str] = &[
     "socks5://",
     "http://",
 ];
-
-pub async fn fetch_text(client: &reqwest::Client, url: &str) -> String {
-    match client.get(url).send().await {
-        Ok(r) => match r.error_for_status() {
-            Ok(r) => r.text().await.unwrap_or_default(),
-            Err(e) => {
-                eprintln!("[HATA] {url} -> {e}");
-                String::new()
-            }
-        },
-        Err(e) => {
-            eprintln!("[HATA] {url} -> {e}");
-            String::new()
-        }
-    }
-}
 
 fn pad(s: &str) -> String {
     let mut o = s.to_string();

@@ -7,10 +7,12 @@ use std::path::PathBuf;
 #[command(name = "barisvpn", version)]
 pub struct Args {
     /// Kaynak subscription URL'leri (virgulle ayrili).
+    /// NOT: ebrasha reposu silindigi icin listeden cikarildi; kalan 2 kaynak
+    /// dogrulanmis-calisir durumda (~12-13 bin ham satir).
     #[arg(
         long,
         value_delimiter = ',',
-        default_value = "https://raw.githubusercontent.com/barry-far/V2ray-config/main/All_Configs_Sub.txt,https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/all_sub.txt,https://raw.githubusercontent.com/ebrasha/free-v2ray-public-list/refs/heads/main/V2Ray-Config-By-EbraSha-All-Type.txt"
+        default_value = "https://raw.githubusercontent.com/barry-far/V2ray-config/main/All_Configs_Sub.txt,https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/all_sub.txt"
     )]
     pub sources: Vec<String>,
 

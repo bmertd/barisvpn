@@ -75,20 +75,45 @@ pub async fn tcp_ok(host: &str, port: u16, timeout: Duration, throttle: &HostThr
 }
 
 /// Tum universe icin TCP testi. Donus: fingerprint -> canli mi.
+/// Ilerleme her 500 tamamlananda loglanir.
 pub async fn test_many(
     items: &[Arc<Item>],
     workers: usize,
     timeout: Duration,
     gap_ms: u64,
 ) -> HashMap<String, bool> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Instant;
+
     let sem = Arc::new(Semaphore::new(workers.max(1)));
     let throttle = Arc::new(HostThrottle::new(gap_ms));
+    let total = items.len();
+    let done = Arc::new(AtomicUsize::new(0));
+    let live = Arc::new(AtomicUsize::new(0));
+    let start = Instant::now();
     let mut set = tokio::task::JoinSet::new();
     for it in items {
-        let (it, sem, throttle) = (Arc::clone(it), Arc::clone(&sem), Arc::clone(&throttle));
+        let (it, sem, throttle, done, live) = (
+            Arc::clone(it),
+            Arc::clone(&sem),
+            Arc::clone(&throttle),
+            Arc::clone(&done),
+            Arc::clone(&live),
+        );
         set.spawn(async move {
             let _p = sem.acquire_owned().await.unwrap();
             let ok = tcp_ok(&it.host, it.port, timeout, &throttle).await;
+            if ok {
+                live.fetch_add(1, Ordering::Relaxed);
+            }
+            let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+            if d % 500 == 0 || d == total {
+                println!(
+                    "  tcp-test {d}/{total} (canli: {}, {:.0}sn)",
+                    live.load(Ordering::Relaxed),
+                    start.elapsed().as_secs_f64()
+                );
+            }
             (it.fingerprint.clone(), ok)
         });
     }
