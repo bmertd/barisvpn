@@ -669,8 +669,9 @@ pub async fn test_one(
     item: &Item,
     singbox: &Path,
     test_url: &str,
-    fallback_url: &str,
+    fallback: Option<&str>,
     proxy_timeout: Duration,
+    fallback_budget: Duration,
     boot_timeout: Duration,
 ) -> (bool, String) {
     let outbound = match build_outbound(item) {
@@ -733,13 +734,36 @@ pub async fn test_one(
         if primary.0 || primary.1.starts_with("http-") {
             return primary;
         }
-        // Transport hatasi: hedef-kaynakli blok ihtimaline karsi yedek hedef.
-        if fallback_url != test_url {
-            let fb = fetch_via(&client, fallback_url).await;
-            if fb.0 || fb.1.starts_with("http-") {
-                return fb;
+        // Transport hatasi: hedef-kaynakli blok ihtimaline karsi yedek hedef,
+        // ama KISA butceyle (yavasligi patlatmamak icin).
+        if let Some(fb) = fallback {
+            if fb != test_url {
+                let capped = async {
+                    match tokio::time::timeout(fallback_budget, client.get(fb).send()).await {
+                        Ok(Ok(r)) => {
+                            let s = r.status().as_u16();
+                            if (200..400).contains(&s) {
+                                (true, format!("http-{s}"))
+                            } else {
+                                (false, format!("http-{s}"))
+                            }
+                        }
+                        Ok(Err(e)) => {
+                            if e.is_timeout() {
+                                (false, "timeout".to_string())
+                            } else {
+                                (false, "fetch-fail".to_string())
+                            }
+                        }
+                        Err(_) => (false, "timeout".to_string()),
+                    }
+                }
+                .await;
+                if capped.0 || capped.1.starts_with("http-") {
+                    return capped;
+                }
+                return (false, format!("{}+{}", primary.1, capped.1));
             }
-            return (false, format!("{}+{}", primary.1, fb.1));
         }
         primary
     }
@@ -752,6 +776,8 @@ pub async fn test_one(
 }
 
 /// Tunel testi: 2 deneme (rate-limit yanlis-negatifine karsi), host-throttle'li.
+/// Yedek hedef sadece 1. denemede kullanilir (hizi korumak icin); ilerleme
+/// her 25 tamamlananda loglanir ki "takildi" hissi olusmasin.
 pub async fn test_many(
     items: &[Arc<Item>],
     singbox: &Path,
@@ -761,36 +787,62 @@ pub async fn test_many(
     proxy_timeout: Duration,
     boot_timeout: Duration,
 ) -> HashMap<String, (bool, String)> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Instant;
+
     let sem = Arc::new(Semaphore::new(workers.max(1)));
     let throttle = Arc::new(HostThrottle::new(800));
     let singbox = singbox.to_path_buf();
     let test_url = test_url.to_string();
     let fallback_url = fallback_url.to_string();
+    // yedek hedefe kisa butce: yavas testleri sündürmesin
+    let fallback_budget = proxy_timeout.min(Duration::from_secs(6));
+    let total = items.len();
+    let done = Arc::new(AtomicUsize::new(0));
+    let ok_n = Arc::new(AtomicUsize::new(0));
+    let start = Instant::now();
     let mut set = tokio::task::JoinSet::new();
     for it in items {
-        let (it, sem, throttle, singbox, test_url, fallback_url) = (
+        let (it, sem, throttle, singbox, test_url, fallback_url, done, ok_n) = (
             Arc::clone(it),
             Arc::clone(&sem),
             Arc::clone(&throttle),
             singbox.clone(),
             test_url.clone(),
             fallback_url.clone(),
+            Arc::clone(&done),
+            Arc::clone(&ok_n),
         );
         set.spawn(async move {
             let _p = sem.acquire_owned().await.unwrap();
             // builder desteklemiyorsa bosuna bekleme
             if build_outbound(&it).is_none() {
+                let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+                if d % 25 == 0 || d == total {
+                    println!(
+                        "  tunel-test {d}/{total} (calisan: {}, {:.0}sn)",
+                        ok_n.load(Ordering::Relaxed),
+                        start.elapsed().as_secs_f64()
+                    );
+                }
                 return (it.fingerprint.clone(), (false, "unsupported".to_string()));
             }
             let mut last = (false, "unknown".to_string());
             for attempt in 0..2 {
                 throttle.gate(&it.host).await;
+                // yedek hedef sadece ilk denemede (hiz icin)
+                let fb = if attempt == 0 {
+                    Some(fallback_url.as_str())
+                } else {
+                    None
+                };
                 let r = test_one(
                     &it,
                     &singbox,
                     &test_url,
-                    &fallback_url,
+                    fb,
                     proxy_timeout,
+                    fallback_budget,
                     boot_timeout,
                 )
                 .await;
@@ -805,6 +857,17 @@ pub async fn test_many(
                 if attempt == 0 {
                     tokio::time::sleep(Duration::from_millis(1500)).await;
                 }
+            }
+            if last.0 {
+                ok_n.fetch_add(1, Ordering::Relaxed);
+            }
+            let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+            if d % 25 == 0 || d == total {
+                println!(
+                    "  tunel-test {d}/{total} (calisan: {}, {:.0}sn)",
+                    ok_n.load(Ordering::Relaxed),
+                    start.elapsed().as_secs_f64()
+                );
             }
             (it.fingerprint.clone(), last)
         });

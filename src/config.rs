@@ -50,16 +50,19 @@ pub struct Args {
     #[arg(long, default_value_t = 64)]
     pub tcp_workers: usize,
 
-    /// Tunel test paralelligi. DUSUK tut: rate-limit + runner yuku icin.
-    #[arg(long, default_value_t = 12)]
+    /// Tunel test paralelligi. Host-basi throttle ayri calistigi icin
+    /// global deger yuksek tutulabilir; yavas test suresini kisaltir.
+    #[arg(long, default_value_t = 16)]
     pub tunnel_workers: usize,
 
     /// TCP baglanti timeout (sn).
     #[arg(long, default_value_t = 5)]
     pub tcp_timeout_secs: u64,
 
-    /// Tunel uzerinden HTTP test timeout (sn).
-    #[arg(long, default_value_t = 12)]
+    /// Tunel uzerinden HTTP test timeout (sn). Gercek calisan sunucu
+    /// 1-3 sn'de dondugu icin 10 sn fazlasiyla yeterli; bloklu sunucular
+    /// tam surenin dolmasini bekler, o yuzden gereksiz yuksek tutulmaz.
+    #[arg(long, default_value_t = 10)]
     pub tunnel_timeout_secs: u64,
 
     /// sing-box'un SOCKS portunu acmasi icin beklenecek sure (sn).

@@ -41,10 +41,11 @@ jobs:
         run: |
           cargo run --release -- \
             --tcp-workers 64 \
-            --tunnel-workers 12 \
+            --tunnel-workers 20 \
             --tcp-timeout-secs 5 \
-            --tunnel-timeout-secs 12 \
-            --keep-fails 2
+            --tunnel-timeout-secs 10 \
+            --keep-fails 2 \
+            --tunnel-keep-fails 10
 
       - name: Sonuclari commit'le
         run: |
