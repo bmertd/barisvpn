@@ -84,7 +84,7 @@ fn transport(net: &str, m: &HashMap<String, String>, default_host: &str) -> Opti
     let path = if path.is_empty() {
         "/".to_string()
     } else {
-        path
+        sanitize_path(&path)
     };
     let host = {
         let h = qp(m, "host");
@@ -117,7 +117,43 @@ fn transport(net: &str, m: &HashMap<String, String>, default_host: &str) -> Opti
     }
 }
 
-// ---- tls ----
+// sing-box'un tanidigi uTLS parmak izleri. Kaynaklarda `fp=null`,
+// `fp=unsafe`, `fp=qq` gibi sacmaliklar var; bilinmeyeni gecirmek
+// sing-box'i boot'ta patlatir ("unknown uTLS fingerprint"), o yuzden
+// whitelist disi deger atilir (duz TLS ile devam edilir).
+fn sanitize_utls_fp(fp: &str) -> &str {
+    match fp.to_ascii_lowercase().as_str() {
+        "chrome" | "firefox" | "safari" | "ios" | "android" | "edge" | "360" | "qq" | "random"
+        | "randomized" | "randomalpn" => fp,
+        _ => "",
+    }
+}
+
+/// reality short_id gecerli mi? (sing-box cift-uzunluk hex ister;
+// "0" gibi degerler boot'ta patlatir). Gecersizse atilir.
+fn valid_short_id(sid: &str) -> bool {
+    !sid.is_empty() && sid.len() % 2 == 0 && sid.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// ws/http path'indeki sahte `%'leri kodla ("invalid URL escape" patlamasina karsi).
+/// Gecerli %XX kacislari ve UTF-8 aynen korunur.
+fn sanitize_path(p: &str) -> String {
+    let b = p.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%'
+            && !(i + 2 < b.len() && b[i + 1].is_ascii_hexdigit() && b[i + 2].is_ascii_hexdigit())
+        {
+            out.extend_from_slice(b"%25");
+            i += 1;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| p.to_string())
+}
 // security "none" ise None doner: tls anahtari tamamen atlanir.
 // Sebep: sing-box v1.14'te explicit `"tls":{"enabled":false}` bazi
 // outbound'larda (vless) nil-pointer panic'e yol aciyor; anahtari
@@ -136,6 +172,7 @@ fn tls_block(
             t.insert("enabled".to_string(), Value::Bool(true));
             t.insert("server_name".to_string(), Value::String(sni.to_string()));
             t.insert("insecure".to_string(), Value::Bool(false));
+            let fp = sanitize_utls_fp(fp);
             if !fp.is_empty() {
                 t.insert("utls".to_string(), json!({"enabled":true,"fingerprint":fp}));
             }
@@ -157,6 +194,7 @@ fn tls_block(
             t.insert("enabled".to_string(), Value::Bool(true));
             t.insert("server_name".to_string(), Value::String(sni.to_string()));
             t.insert("insecure".to_string(), Value::Bool(false));
+            let fp = sanitize_utls_fp(fp);
             let fingerprint = if fp.is_empty() { "chrome" } else { fp };
             t.insert(
                 "utls".to_string(),
@@ -167,7 +205,7 @@ fn tls_block(
             if !pbk.is_empty() {
                 r.insert("public_key".to_string(), Value::String(pbk.to_string()));
             }
-            if !sid.is_empty() {
+            if valid_short_id(sid) {
                 r.insert("short_id".to_string(), Value::String(sid.to_string()));
             }
             t.insert("reality".to_string(), Value::Object(r));
@@ -240,10 +278,15 @@ fn build_vmess(item: &Item) -> Option<Value> {
     ob.insert("server".to_string(), Value::String(server));
     ob.insert("server_port".to_string(), json!(port));
     ob.insert("uuid".to_string(), Value::String(uuid));
-    ob.insert(
-        "security".to_string(),
-        Value::String(s("scy").unwrap_or_else(|| "auto".into())),
-    );
+    // `scy=null` gibi sacmaliklar boot'ta patlatir; bilinmeyen -> auto.
+    let scy = s("scy")
+        .unwrap_or_else(|| "auto".into())
+        .to_ascii_lowercase();
+    let scy = match scy.as_str() {
+        "auto" | "aes-128-gcm" | "chacha20-poly1305" | "none" => scy,
+        _ => "auto".to_string(),
+    };
+    ob.insert("security".to_string(), Value::String(scy));
     ob.insert("alter_id".to_string(), json!(alter));
     if let Some(t) = transport(&net, &m, &host) {
         ob.insert("transport".to_string(), t);
@@ -281,8 +324,10 @@ fn build_vless(url: &Url) -> Option<Value> {
     ob.insert("server".to_string(), Value::String(host.clone()));
     ob.insert("server_port".to_string(), json!(port));
     ob.insert("uuid".to_string(), Value::String(uuid));
-    let flow = qp(&m, "flow");
-    if !flow.is_empty() {
+    // sing-box sadece bu flow'lari bilir; "xtls-rprx-vision-udp443" gibi
+    // Xray-ozel degerler boot'ta patlatir. Bilinmeyen flow atilir (sans verilir).
+    let flow = qp(&m, "flow").to_ascii_lowercase();
+    if flow == "xtls-rprx-vision" {
         ob.insert("flow".to_string(), Value::String(flow));
     }
     if let Some(t) = transport(&net, &m, &qp(&m, "host")) {
@@ -384,12 +429,19 @@ fn build_ss(item: &Item) -> Option<Value> {
             .to_string(),
         hostport[c + 1..].trim().parse().ok()?,
     );
+    // sing-box metod adlari: kisa yazimlari gercek adlara cevir
+    // (chacha20-poly1305 boot'ta patlatir).
+    let method = match method.to_ascii_lowercase().as_str() {
+        "chacha20-poly1305" => "chacha20-ietf-poly1305".to_string(),
+        "xchacha20-poly1305" => "xchacha20-ietf-poly1305".to_string(),
+        m => m.to_string(),
+    };
     Some(json!({
         "type": "shadowsocks",
         "tag": "proxy",
         "server": host,
         "server_port": port,
-        "method": method.to_ascii_lowercase(),
+        "method": method,
         "password": password,
     }))
 }
@@ -677,40 +729,64 @@ pub async fn test_one(
         Some(o) => o,
         None => return (false, "unsupported".to_string()),
     };
-    let port = match free_port() {
-        Some(p) => p,
-        None => return (false, "no-port".to_string()),
-    };
-    let cfg = json!({
-        "log": {"level": "error"},
-        "inbounds": [{"type": "socks", "tag": "in", "listen": "127.0.0.1", "listen_port": port}],
-        "outbounds": [outbound, {"type": "direct", "tag": "direct"}],
-        "route": {"final": "proxy", "auto_detect_interface": false}
-    });
-    let cfg_path =
-        std::env::temp_dir().join(format!("barisvpn-{}-{}.json", std::process::id(), port));
-    if tokio::fs::write(&cfg_path, serde_json::to_string(&cfg).unwrap_or_default())
-        .await
-        .is_err()
-    {
-        return (false, "cfg-write-fail".to_string());
-    }
 
-    let mut child = match tokio::process::Command::new(singbox)
-        .arg("run")
-        .arg("-c")
-        .arg(&cfg_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            let _ = tokio::fs::remove_file(&cfg_path).await;
-            return (false, format!("spawn-fail:{e}"));
+    // Boot: en fazla 2 deneme, her seferinde YENI bos port.
+    // Sebep: free_port() bind-edip birakir; yogun paralellikte baska test
+    // araya girip ayni portu kapabilir -> sing-box bind-hatasiyla cokup
+    // "not-up" gorunur. Taze portla retry yaris durumunu eler; gercekten
+    // bozuk config ise aninda yine coker (ucuz).
+    let mut child_opt: Option<tokio::process::Child> = None;
+    let mut active_port = 0u16;
+    let mut cfg_path = std::path::PathBuf::new();
+    for _ in 0..2 {
+        let port = match free_port() {
+            Some(p) => p,
+            None => return (false, "no-port".to_string()),
+        };
+        let cfg = json!({
+            "log": {"level": "error"},
+            "inbounds": [{"type": "socks", "tag": "in", "listen": "127.0.0.1", "listen_port": port}],
+            "outbounds": [outbound.clone(), {"type": "direct", "tag": "direct"}],
+            "route": {"final": "proxy", "auto_detect_interface": false}
+        });
+        cfg_path = std::env::temp_dir().join(format!("barisvpn-{}-{port}", std::process::id()));
+        if tokio::fs::write(&cfg_path, serde_json::to_string(&cfg).unwrap_or_default())
+            .await
+            .is_err()
+        {
+            return (false, "cfg-write-fail".to_string());
         }
+
+        let mut child = match tokio::process::Command::new(singbox)
+            .arg("run")
+            .arg("-c")
+            .arg(&cfg_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&cfg_path).await;
+                return (false, format!("spawn-fail:{e}"));
+            }
+        };
+        if wait_port(port, &mut child, boot_timeout).await {
+            active_port = port;
+            child_opt = Some(child);
+            break;
+        }
+        // boot olmadi: temizle, taze portla bir daha dene
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        let _ = tokio::fs::remove_file(&cfg_path).await;
+    }
+    let mut child = match child_opt {
+        Some(c) => c,
+        None => return (false, "singbox-not-up".to_string()),
     };
+    let port = active_port;
 
     let outcome = async {
         if !wait_port(port, &mut child, boot_timeout).await {
@@ -800,9 +876,12 @@ pub async fn test_many(
     let done = Arc::new(AtomicUsize::new(0));
     let ok_n = Arc::new(AtomicUsize::new(0));
     let start = Instant::now();
+    // teshis icin: sebep basina ilk 3 ornek URI (log sismemesi icin cap'li)
+    let examples: Arc<std::sync::Mutex<HashMap<String, Vec<String>>>> =
+        Arc::new(std::sync::Mutex::new(HashMap::new()));
     let mut set = tokio::task::JoinSet::new();
     for it in items {
-        let (it, sem, throttle, singbox, test_url, fallback_url, done, ok_n) = (
+        let (it, sem, throttle, singbox, test_url, fallback_url, done, ok_n, examples) = (
             Arc::clone(it),
             Arc::clone(&sem),
             Arc::clone(&throttle),
@@ -811,6 +890,7 @@ pub async fn test_many(
             fallback_url.clone(),
             Arc::clone(&done),
             Arc::clone(&ok_n),
+            Arc::clone(&examples),
         );
         set.spawn(async move {
             let _p = sem.acquire_owned().await.unwrap();
@@ -852,11 +932,16 @@ pub async fn test_many(
                     break;
                 }
                 if attempt == 0 {
-                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                    tokio::time::sleep(Duration::from_millis(1000)).await;
                 }
             }
             if last.0 {
                 ok_n.fetch_add(1, Ordering::Relaxed);
+            } else if let Ok(mut ex) = examples.lock() {
+                let v = ex.entry(last.1.clone()).or_default();
+                if v.len() < 3 {
+                    v.push(it.original.clone());
+                }
             }
             let d = done.fetch_add(1, Ordering::Relaxed) + 1;
             if d % 25 == 0 || d == total {
@@ -873,6 +958,17 @@ pub async fn test_many(
     while let Some(r) = set.join_next().await {
         if let Ok((fp, v)) = r {
             out.insert(fp, v);
+        }
+    }
+    if let Ok(ex) = examples.lock() {
+        let mut rs: Vec<_> = ex.iter().collect();
+        rs.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+        for (reason, uris) in rs.iter().take(6) {
+            println!("  ornek({reason}):");
+            for u in uris.iter().take(3) {
+                let short: String = u.chars().take(160).collect();
+                println!("    {short}");
+            }
         }
     }
     out
@@ -948,11 +1044,92 @@ mod tests {
         assert!(build_outbound(&it).is_none());
     }
 
+    /// DUMP_CHECK=1 /tmp/chk ile calistir: kaynaklardaki tum URI'ler icin tam
+    /// sing-box config uret; sonra `sing-box check` ile hangileri boot'ta
+    /// patliyor bulunur (singbox-not-up sebeplerini avlamak icin).
+    #[test]
+    fn dump_configs_for_check() {
+        if std::env::var("DUMP_CHECK").is_err() {
+            return;
+        }
+        let outdir = std::env::var("DUMP_DIR").unwrap_or_else(|_| "/tmp/chk".into());
+        std::fs::create_dir_all(&outdir).unwrap();
+        let mut files: Vec<String> = Vec::new();
+        for src in [
+            "/tmp/real/s1.txt",
+            "/tmp/real/s2.txt",
+            "/tmp/full/super.txt",
+        ] {
+            if let Ok(t) = std::fs::read_to_string(src) {
+                files.push(t);
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut n = 0;
+        for content in files {
+            let decoded = crate::fetch::decode_if_b64(&content);
+            for uri in crate::fetch::extract_uris(&decoded) {
+                let Some(it) = parse_item(&uri) else { continue };
+                if !seen.insert(it.fingerprint.clone()) {
+                    continue;
+                }
+                let Some(ob) = build_outbound(&it) else {
+                    continue;
+                };
+                let cfg = serde_json::json!({
+                    "log": {"level": "error"},
+                    "inbounds": [{"type": "socks", "tag": "in", "listen": "127.0.0.1", "listen_port": 14499}],
+                    "outbounds": [ob, {"type": "direct", "tag": "direct"}],
+                    "route": {"final": "proxy", "auto_detect_interface": false}
+                });
+                let p = format!("{}/{}.json", outdir, it.fingerprint);
+                std::fs::write(p, serde_json::to_string(&cfg).unwrap()).unwrap();
+                n += 1;
+            }
+        }
+        eprintln!("dump: {n} config -> {outdir}");
+    }
+
     #[test]
     fn reality_fields_present() {
-        let it = parse_item("vless://11111111-1111-1111-1111-111111111111@h.example:443?security=reality&pbk=PUBKEY&sid=SHORT&sni=h.example&fp=chrome").unwrap();
+        let it = parse_item("vless://11111111-1111-1111-1111-111111111111@h.example:443?security=reality&pbk=PUBKEY&sid=01ab&sni=h.example&fp=chrome").unwrap();
         let o = build_outbound(&it).unwrap();
         assert_eq!(o["tls"]["reality"]["public_key"], "PUBKEY");
-        assert_eq!(o["tls"]["reality"]["short_id"], "SHORT");
+        assert_eq!(o["tls"]["reality"]["short_id"], "01ab");
+    }
+
+    #[test]
+    fn garbage_params_sanitized_not_fatal() {
+        // fp=null/unsafe -> utls atilir, TLS kalir
+        let it = parse_item("vless://11111111-1111-1111-1111-111111111111@h.example:443?security=tls&sni=h.example&fp=null").unwrap();
+        let o = build_outbound(&it).unwrap();
+        assert!(o.get("utls").is_none());
+        assert!(o["tls"].get("utls").is_none());
+        // Xray-ozel flow atilir
+        let it = parse_item("vless://11111111-1111-1111-1111-111111111111@h.example:443?security=tls&flow=xtls-rprx-vision-udp443").unwrap();
+        let o = build_outbound(&it).unwrap();
+        assert!(o.get("flow").is_none());
+        // gecerli flow korunur
+        let it = parse_item("vless://11111111-1111-1111-1111-111111111111@h.example:443?security=tls&flow=xtls-rprx-vision").unwrap();
+        assert_eq!(build_outbound(&it).unwrap()["flow"], "xtls-rprx-vision");
+        // ss metod aliasi
+        let it = parse_item("ss://chacha20-poly1305:test@h.example:8388").unwrap();
+        assert_eq!(
+            build_outbound(&it).unwrap()["method"],
+            "chacha20-ietf-poly1305"
+        );
+        // vmess scy=null -> auto
+        use base64::{engine::general_purpose::STANDARD as S, Engine as _};
+        let j = r#"{"v":"2","add":"h.example","port":443,"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","aid":0,"net":"tcp","scy":"null"}"#;
+        let it = parse_item(&format!("vmess://{}", S.encode(j))).unwrap();
+        assert_eq!(build_outbound(&it).unwrap()["security"], "auto");
+        // reality sid "0" atilir, pbk korunur
+        let it = parse_item("vless://11111111-1111-1111-1111-111111111111@h.example:443?security=reality&pbk=K&sid=0&sni=h.example").unwrap();
+        let o = build_outbound(&it).unwrap();
+        assert!(o["tls"]["reality"].get("short_id").is_none());
+        // path'teki sahte % kodlanir
+        assert_eq!(sanitize_path("/a%b"), "/a%25b");
+        assert_eq!(sanitize_path("/a%2Fb"), "/a%2Fb");
+        assert_eq!(sanitize_path("/çalışır"), "/çalışır");
     }
 }
