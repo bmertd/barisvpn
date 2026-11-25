@@ -48,8 +48,8 @@ pub struct Args {
     #[arg(long, default_value_t = 20000)]
     pub max_history: usize,
 
-    /// TCP test paralelligi.
-    #[arg(long, default_value_t = 64)]
+    /// TCP test paralelligi. TCP baglantisi ucuzdur, yuksek tutulur.
+    #[arg(long, default_value_t = 100)]
     pub tcp_workers: usize,
 
     /// Tunel test paralelligi. Host-basi throttle ayri calistigi icin
@@ -62,9 +62,10 @@ pub struct Args {
     pub tcp_timeout_secs: u64,
 
     /// Tunel uzerinden HTTP test timeout (sn). Gercek calisan sunucu
-    /// 1-3 sn'de dondugu icin 10 sn fazlasiyla yeterli; bloklu sunucular
+    /// 1-3 sn'de dondugu icin 8 sn fazlasiyla yeterli; bloklu sunucular
     /// tam surenin dolmasini bekler, o yuzden gereksiz yuksek tutulmaz.
-    #[arg(long, default_value_t = 10)]
+    /// 2. deneme her zaman max 5 sn ile kosar (flake sigortasi).
+    #[arg(long, default_value_t = 8)]
     pub tunnel_timeout_secs: u64,
 
     /// sing-box'un SOCKS portunu acmasi icin beklenecek sure (sn).

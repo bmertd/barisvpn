@@ -671,7 +671,6 @@ pub async fn test_one(
     test_url: &str,
     fallback: Option<&str>,
     proxy_timeout: Duration,
-    fallback_budget: Duration,
     boot_timeout: Duration,
 ) -> (bool, String) {
     let outbound = match build_outbound(item) {
@@ -738,6 +737,7 @@ pub async fn test_one(
         // ama KISA butceyle (yavasligi patlatmamak icin).
         if let Some(fb) = fallback {
             if fb != test_url {
+                let fb_budget = proxy_timeout.min(Duration::from_secs(5));
                 let capped = async {
                     match tokio::time::timeout(fallback_budget, client.get(fb).send()).await {
                         Ok(Ok(r)) => {
@@ -795,8 +795,7 @@ pub async fn test_many(
     let singbox = singbox.to_path_buf();
     let test_url = test_url.to_string();
     let fallback_url = fallback_url.to_string();
-    // yedek hedefe kisa butce: yavas testleri sündürmesin
-    let fallback_budget = proxy_timeout.min(Duration::from_secs(6));
+    // yedek hedefe ayri butce yok: test_one icinde primary'e gore cap'lenir
     let total = items.len();
     let done = Arc::new(AtomicUsize::new(0));
     let ok_n = Arc::new(AtomicUsize::new(0));
@@ -830,22 +829,20 @@ pub async fn test_many(
             let mut last = (false, "unknown".to_string());
             for attempt in 0..2 {
                 throttle.gate(&it.host).await;
-                // yedek hedef sadece ilk denemede (hiz icin)
+                // 1. deneme tam butce + yedek hedef; 2. deneme kisa butce
+                // (yavas ama saglam sunucu 1. denemede zaten yakalanir, 2.'si
+                // sadece flake sigortasidir) ve yedek hedef yok.
+                let to = if attempt == 0 {
+                    proxy_timeout
+                } else {
+                    proxy_timeout.min(Duration::from_secs(5))
+                };
                 let fb = if attempt == 0 {
                     Some(fallback_url.as_str())
                 } else {
                     None
                 };
-                let r = test_one(
-                    &it,
-                    &singbox,
-                    &test_url,
-                    fb,
-                    proxy_timeout,
-                    fallback_budget,
-                    boot_timeout,
-                )
-                .await;
+                let r = test_one(&it, &singbox, &test_url, fb, to, boot_timeout).await;
                 last = r;
                 if last.0 {
                     break;

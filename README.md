@@ -54,14 +54,15 @@ yazılmış halidir.
 Runner IP'si sunucularca throttle yiyip — ya da GitHub IP aralıkları toptan
 datacenter diye bloklanıp — sağlam config'leri elememek için:
 
-- **Düşük tünel paralelliği** (CI'da 20 worker, varsayılan 16) + **host-başı bekleme**
+- **Düşük tünel paralelliği** (CI'da 32 worker, TCP'de 100) + **host-başı bekleme**
   (TCP 300 ms, tünel 800 ms) + jitter — aynı sunucuya abanma yok. Global
   paralellik yüksek tutulur çünkü dar boğaz ağ beklemesidir, CPU değil.
-- **Her testte 2 deneme** (TCP ve tünel ayrı ayrı); tünel timeout'u 10 sn.
-  Bloklu sunucular tam süreyi beklediği için timeout gereksiz yüksek tutulmaz.
+- **Her testte 2 deneme**, ama 2. deneme kısa bütçeyle (max 5 sn): yavaş ama
+  sağlam sunucu 1. denemede (8 sn) zaten yakalanır, 2.'si sadece flake
+  sigortasıdır. Tünel timeout'u 8 sn.
 - **Yedek test hedefi** (`--test-url-fallback`, varsayılan `example.com`):
   birincil hedefe tünel üzerinden transport-hatasıyla erişilemezse aynı tünel
-  üzerinden bir de yedek hedef denenir — ama **kısa bütçeyle** (max 6 sn) ve
+  üzerinden bir de yedek hedef denenir — ama **kısa bütçeyle** (max 5 sn) ve
   **sadece 1. denemede**, ki yavaş koşuları süründürmesin. HTTP status dönerse
   (200 de 403 de) tünel veri taşıyor demektir, sonuç kesindir.
 - İlerleme tünel fazında her 25 config'de bir loglanır

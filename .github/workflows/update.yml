@@ -40,10 +40,10 @@ jobs:
           SINGBOX_PATH: /usr/local/bin/sing-box
         run: |
           cargo run --release -- \
-            --tcp-workers 64 \
-            --tunnel-workers 20 \
+            --tcp-workers 100 \
+            --tunnel-workers 32 \
             --tcp-timeout-secs 5 \
-            --tunnel-timeout-secs 10 \
+            --tunnel-timeout-secs 8 \
             --keep-fails 2 \
             --tunnel-keep-fails 10
 
