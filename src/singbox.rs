@@ -739,7 +739,7 @@ pub async fn test_one(
             if fb != test_url {
                 let fb_budget = proxy_timeout.min(Duration::from_secs(5));
                 let capped = async {
-                    match tokio::time::timeout(fallback_budget, client.get(fb).send()).await {
+                    match tokio::time::timeout(fb_budget, client.get(fb).send()).await {
                         Ok(Ok(r)) => {
                             let s = r.status().as_u16();
                             if (200..400).contains(&s) {
