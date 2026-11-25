@@ -1,0 +1,54 @@
+name: update-configs
+
+on:
+  schedule:
+    # 3 saatte bir
+    - cron: "0 */3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-configs
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Testler
+        run: cargo test
+
+      - name: sing-box kur
+        run: |
+          set -euo pipefail
+          TAG="$(curl -sL https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name)"
+          echo "sing-box $TAG kuruluyor"
+          curl -sL "https://github.com/SagerNet/sing-box/releases/download/${TAG}/sing-box-${TAG#v}-linux-amd64.tar.gz" -o /tmp/sb.tgz
+          tar xzf /tmp/sb.tgz -C /tmp
+          sudo install -m755 "/tmp/sing-box-${TAG#v}-linux-amd64/sing-box" /usr/local/bin/sing-box
+          sing-box version
+
+      - name: Configleri topla + test et
+        env:
+          SINGBOX_PATH: /usr/local/bin/sing-box
+        run: |
+          cargo run --release -- \
+            --tcp-workers 64 \
+            --tunnel-workers 12 \
+            --tcp-timeout-secs 5 \
+            --tunnel-timeout-secs 12 \
+            --keep-fails 2
+
+      - name: Sonuclari commit'le
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add super.txt superport.txt super.b64.txt superport.b64.txt state/history.json || true
+          git diff --cached --quiet && echo "degisiklik yok" || (git commit -m "configs: $(date -u +%F-%H%M) UTC" && git push)

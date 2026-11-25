@@ -1,0 +1,5 @@
+/target/
+*.log
+sb.tgz
+sing-box-*/
+sing-box
