@@ -49,17 +49,24 @@ yazılmış halidir.
    `unsupported` olup listeye sızmazlar.)
 5. **Katı kural:** Listeye girmek için **hem TCP hem tünel** geçmek zorunda.
 
-## Rate-limit koruması (GitHub runner'dan test ediliyor diye)
+## Rate-limit / datacenter-blok koruması (GitHub runner'dan test ediliyor diye)
 
-Runner IP'si sunucularca throttle yiyip sağlam config'leri elememek için:
+Runner IP'si sunucularca throttle yiyip — ya da GitHub IP aralıkları toptan
+datacenter diye bloklanıp — sağlam config'leri elememek için:
 
 - **Düşük tünel paralelliği** (varsayılan 12, TCP 64) + **host-başı bekleme**
   (TCP 300 ms, tünel 800 ms) + jitter — aynı sunucuya abanma yok.
 - **Her testte 2 deneme** (TCP ve tünel ayrı ayrı).
-- **Grace/history:** Bir config tek seferlik patlarsa hemen silinmez;
-  `state/history.json`'da art arda başarısızlık sayılır. `--keep-fails 2`
-  ile **üst üste 2 çalışmada da** başarısız olan düşer. Daha önce hiç
-  başarmamış kayıtlar grace'e girmez (çöp liste şişmez).
+- **Yedek test hedefi** (`--test-url-fallback`, varsayılan `example.com`):
+  birincil hedefe tünel üzerinden transport-hatasıyla erişilemezse aynı tünel
+  üzerinden bir de yedek hedef denenir. HTTP status dönerse (200 de 403 de)
+  tünel veri taşıyor demektir, sonuç kesindir.
+- **Asimetrik grace** (`state/history.json`):
+  - TCP **ölü** → sunucu gerçekten ölü sinyali → kısa tolerans
+    (`--keep-fails 2`, üst üste 2 koşuda da ölüyse düşer).
+  - TCP **canlı** ama tünel patlak → **datacenter-blok şüphesi** → uzun
+    tolerans (`--tunnel-keep-fails 10`, yani ~30 saat listede kalır). Daha
+    önce hiç katı-başarı görmemiş kayıtlar grace'e girmez (çöp şişmez).
 - Çıktılar fingerprint'e göre **sıralı ve deterministik** yazılır; aynı
   profiller her çalışmada yeniden yazılıp diff şişirmez.
 
@@ -77,7 +84,8 @@ cargo run -- --skip-tunnel --out-super /tmp/super.txt --out-superport /tmp/sp.tx
 
 Seçenekler (`--help`): `--sources`, `--tcp-workers`, `--tunnel-workers`,
 `--tcp-timeout-secs`, `--tunnel-timeout-secs`, `--keep-fails`,
-`--max-history`, `--test-url`, `--singbox`, `--skip-tunnel`.
+`--tunnel-keep-fails`, `--test-url`, `--test-url-fallback`, `--max-history`,
+`--singbox`, `--skip-tunnel`.
 
 ## Otomasyon
 

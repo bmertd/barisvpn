@@ -639,11 +639,37 @@ async fn wait_port(port: u16, child: &mut tokio::process::Child, timeout: Durati
     false
 }
 
+async fn fetch_via(client: &reqwest::Client, url: &str) -> (bool, String) {
+    match client.get(url).send().await {
+        Ok(r) => {
+            let s = r.status().as_u16();
+            if (200..400).contains(&s) {
+                (true, format!("http-{s}"))
+            } else {
+                (false, format!("http-{s}"))
+            }
+        }
+        Err(e) => {
+            if e.is_timeout() {
+                (false, "timeout".to_string())
+            } else {
+                (false, "fetch-fail".to_string())
+            }
+        }
+    }
+}
+
 /// Tek config icin tam tunel testi. Donus: (calisiyor mu, sebep).
+///
+/// Birincil hedefe transport-hatasiyla erisilemezse (timeout/fetch-fail:
+/// hedef-kaynakli ya da GitHub-IP blok suphesi) ayni tunel uzerinden yedek
+/// hedef bir kez denenir. HTTP status donduyse (200 de 403 de olsa) tunel
+/// veri tasiyordur, sonuc kesindir, yedek denenmez.
 pub async fn test_one(
     item: &Item,
     singbox: &Path,
     test_url: &str,
+    fallback_url: &str,
     proxy_timeout: Duration,
     boot_timeout: Duration,
 ) -> (bool, String) {
@@ -702,23 +728,20 @@ pub async fn test_one(
             Ok(c) => c,
             Err(_) => return (false, "client-fail".to_string()),
         };
-        match client.get(test_url).send().await {
-            Ok(r) => {
-                let s = r.status().as_u16();
-                if (200..400).contains(&s) {
-                    (true, format!("http-{s}"))
-                } else {
-                    (false, format!("http-{s}"))
-                }
-            }
-            Err(e) => {
-                if e.is_timeout() {
-                    (false, "timeout".to_string())
-                } else {
-                    (false, "fetch-fail".to_string())
-                }
-            }
+        // Birincil hedef. HTTP status donerse tunel veri tasiyor demektir.
+        let primary = fetch_via(&client, test_url).await;
+        if primary.0 || primary.1.starts_with("http-") {
+            return primary;
         }
+        // Transport hatasi: hedef-kaynakli blok ihtimaline karsi yedek hedef.
+        if fallback_url != test_url {
+            let fb = fetch_via(&client, fallback_url).await;
+            if fb.0 || fb.1.starts_with("http-") {
+                return fb;
+            }
+            return (false, format!("{}+{}", primary.1, fb.1));
+        }
+        primary
     }
     .await;
 
@@ -733,6 +756,7 @@ pub async fn test_many(
     items: &[Arc<Item>],
     singbox: &Path,
     test_url: &str,
+    fallback_url: &str,
     workers: usize,
     proxy_timeout: Duration,
     boot_timeout: Duration,
@@ -741,14 +765,16 @@ pub async fn test_many(
     let throttle = Arc::new(HostThrottle::new(800));
     let singbox = singbox.to_path_buf();
     let test_url = test_url.to_string();
+    let fallback_url = fallback_url.to_string();
     let mut set = tokio::task::JoinSet::new();
     for it in items {
-        let (it, sem, throttle, singbox, test_url) = (
+        let (it, sem, throttle, singbox, test_url, fallback_url) = (
             Arc::clone(it),
             Arc::clone(&sem),
             Arc::clone(&throttle),
             singbox.clone(),
             test_url.clone(),
+            fallback_url.clone(),
         );
         set.spawn(async move {
             let _p = sem.acquire_owned().await.unwrap();
@@ -759,7 +785,15 @@ pub async fn test_many(
             let mut last = (false, "unknown".to_string());
             for attempt in 0..2 {
                 throttle.gate(&it.host).await;
-                let r = test_one(&it, &singbox, &test_url, proxy_timeout, boot_timeout).await;
+                let r = test_one(
+                    &it,
+                    &singbox,
+                    &test_url,
+                    &fallback_url,
+                    proxy_timeout,
+                    boot_timeout,
+                )
+                .await;
                 last = r;
                 if last.0 {
                     break;

@@ -89,8 +89,8 @@ async fn main() -> anyhow::Result<()> {
         if universe.contains_key(fp) {
             continue;
         }
-        if e.f >= args.keep_fails {
-            continue; // zaten dusmus
+        if e.tcp_f >= args.keep_fails && e.tun_f >= args.tunnel_keep_fails {
+            continue; // iki grace de tukenmis -> test slotu harcama
         }
         if carried >= args.max_history {
             break;
@@ -165,6 +165,7 @@ async fn main() -> anyhow::Result<()> {
                     &cand,
                     &sb,
                     &args.test_url,
+                    &args.test_url_fallback,
                     args.tunnel_workers,
                     Duration::from_secs(args.tunnel_timeout_secs),
                     Duration::from_secs(args.boot_timeout_secs),
@@ -190,44 +191,37 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // ---------- 6) KATI KURAL: super = TCP && TUNEL ----------
+    // ---------- 6) KATI KURAL + ASIMETRIK GRACE: super = TCP && TUNEL ----------
     // superport = super'in 80/443 alt kumesi.
+    // - TCP && tunel OK -> girer.
+    // - TCP OK + tunel FAIL -> GitHub-runner datacenter blogu suphesi:
+    //   daha once kati-basarmissa tunnel_keep_fails kosuya kadar kalir.
+    // - TCP FAIL -> olu suphesi: keep_fails kosuya kadar kalir (kisa).
+    let mut super_fps: Vec<String> = Vec::new();
     for (fp, item) in universe.iter() {
-        let e = history.entries.entry(fp.clone()).or_insert(state::Entry {
-            o: item.original.clone(),
-            c: item.canonical.clone(),
-            f: 0,
-            ls: 0,
-            lw: now,
+        let e = history.entries.entry(fp.clone()).or_insert_with(|| {
+            state::Entry::fresh(item.original.clone(), item.canonical.clone(), now)
         });
-        e.lw = now;
         // guncel temsilciyi koru (isim degisse bile baglanti ayni)
         if e.o != item.original {
             e.o = item.original.clone();
         }
         e.c = item.canonical.clone();
-        let strict_ok = tcp_pass.contains(fp) && tunnel_ok.contains(fp);
-        if strict_ok {
-            e.f = 0;
-            e.ls = now;
-        } else {
-            e.f = e.f.saturating_add(1);
+        let keep = e.observe(
+            tcp_pass.contains(fp),
+            tunnel_ok.contains(fp),
+            args.keep_fails,
+            args.tunnel_keep_fails,
+            now,
+            true,
+        );
+        if keep {
+            super_fps.push(fp.clone());
         }
     }
     history.prune(args.max_history);
     history.save(&args.history);
 
-    // Cikti = bu calismada strict-gecenler + grace'tekiler (once basarmis, < keep_fails fail).
-    // Hic basarmamis (ls==0) kayitlar grace'e girmez -> cop listeler sismez.
-    let mut super_fps: Vec<String> = history
-        .entries
-        .iter()
-        .filter(|(fp, e)| {
-            let strict_now = tcp_pass.contains(*fp) && tunnel_ok.contains(*fp);
-            strict_now || (e.ls > 0 && e.f < args.keep_fails && universe.contains_key(*fp))
-        })
-        .map(|(fp, _)| fp.clone())
-        .collect();
     super_fps.sort();
 
     let fp_to_item: HashMap<&str, &Arc<Item>> =

@@ -35,6 +35,13 @@ pub struct Args {
     #[arg(long, default_value_t = 2)]
     pub keep_fails: u32,
 
+    /// TCP'si CANLI ama tuneli patlayan kayitlar icin tolerans (kosu sayisi).
+    /// GitHub runner IP'leri datacenter diye bloklanabildigi icin bu deger
+    /// yuksek tutulur: 10 = ~30 saat boyunca listede kalir. TCP'si de olmusse
+    /// `keep_fails` gecerlidir (kisa).
+    #[arg(long, default_value_t = 10)]
+    pub tunnel_keep_fails: u32,
+
     /// History'de tutulacak max kayit (LRU budama).
     #[arg(long, default_value_t = 20000)]
     pub max_history: usize,
@@ -62,6 +69,12 @@ pub struct Args {
     /// Tunel testi hedefi.
     #[arg(long, default_value = "http://www.gstatic.com/generate_204")]
     pub test_url: String,
+
+    /// Yedek test hedefi. Birincil hedefe tunel uzerinden erisilemezse
+    /// (hedef-kaynakli blok suphesi) bir de burasi denenir; transport
+    /// hatasinda eleme yapilmadan once ikinci sans verilir.
+    #[arg(long, default_value = "http://example.com/")]
+    pub test_url_fallback: String,
 
     /// sing-box binary yolu. Verilmezse SINGBOX_PATH env'i, sonra PATH aranir.
     #[arg(long)]
